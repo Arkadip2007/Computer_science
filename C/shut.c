@@ -7,9 +7,9 @@ int main() {
     scanf(" %c", &choice);
 
     if(choice == 'y' || choice == 'Y') {
-        system("shutdown now");
+        system("shutdown now");// only linux command
     } else {
-        printf("Shutdown cancelled.\n");
+        printf("Shutdown cancelled.\n");// 
     }
 
     return 0;
