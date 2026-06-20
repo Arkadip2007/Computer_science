@@ -1,4 +1,0 @@
-1) Code editor 01 : https://www.tinkercad.com/things/3Qduh4hP79K/editel?returnTo=%2Fdashboard
-2) Code editor 02 : https://wokwi.com/projects/new/arduino-nano
-
-3) YouTube - Arduino Course for Everybody: https://youtu.be/DPqiIzK97K0

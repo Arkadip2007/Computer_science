@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Oscilloscope</title>
+  <style>
+    :root {
+      --bg: #081018;
+      --panel: #0e1a26;
+      --grid: #1f3347;
+      --trace: #39ff9c;
+      --text: #d4e4f5;
+      --accent: #4aa3ff;
+    }
+
+    body {
+      margin: 0;
+      font-family: Consolas, "Courier New", monospace;
+      background: radial-gradient(circle at top, #13273a 0%, var(--bg) 55%);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+    }
+
+    .wrap {
+      width: min(960px, 95vw);
+      background: var(--panel);
+      border: 1px solid #2a425c;
+      border-radius: 10px;
+      padding: 14px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    button, input[type="range"] {
+      background: #132638;
+      color: var(--text);
+      border: 1px solid #2f4a66;
+      border-radius: 6px;
+      padding: 7px 10px;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      opacity: 0.95;
+    }
+
+    canvas {
+      width: 100%;
+      height: 420px;
+      display: block;
+      background: #050b12;
+      border: 1px solid #23384d;
+      border-radius: 8px;
+    }
+
+    .status {
+      margin-left: auto;
+      font-size: 12px;
+      opacity: 0.9;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="toolbar">
+      <button id="startBtn">Start Microphone</button>
+      <button id="stopBtn" disabled>Stop</button>
+
+      <label>
+        Gain
+        <input id="gain" type="range" min="0.2" max="5" value="1" step="0.1" />
+      </label>
+
+      <label>
+        Zoom
+        <input id="zoom" type="range" min="1" max="8" value="1" step="0.2" />
+      </label>
+
+      <span id="status" class="status">Idle</span>
+    </div>
+
+    <canvas id="scope" width="1200" height="420"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("scope");
+    const ctx = canvas.getContext("2d");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const statusEl = document.getElementById("status");
+    const gainEl = document.getElementById("gain");
+    const zoomEl = document.getElementById("zoom");
+
+    let audioCtx, analyser, stream, sourceNode, gainNode, dataArray, rafId;
+
+    function drawGrid() {
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.fillStyle = "#050b12";
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = "#1f3347";
+      ctx.lineWidth = 1;
+
+      const divX = 12, divY = 8;
+      for (let i = 0; i <= divX; i++) {
+        const x = (i / divX) * w;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+
+      for (let i = 0; i <= divY; i++) {
+        const y = (i / divY) * h;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = "#2f4a66";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+      ctx.stroke();
+    }
+
+    function drawWave() {
+      rafId = requestAnimationFrame(drawWave);
+      analyser.getByteTimeDomainData(dataArray);
+
+      drawGrid();
+
+      const w = canvas.width;
+      const h = canvas.height;
+      const zoom = parseFloat(zoomEl.value);
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#39ff9c";
+      ctx.beginPath();
+
+      let x = 0;
+      const sliceWidth = (w / dataArray.length) * zoom;
+
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = dataArray[i] / 128.0;   // around 1.0 at center
+        const y = (v * h) / 2;
+
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+
+        x += sliceWidth;
+        if (x > w) break;
+      }
+
+      ctx.stroke();
+    }
+
+    async function start() {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        sourceNode = audioCtx.createMediaStreamSource(stream);
+
+        gainNode = audioCtx.createGain();
+        gainNode.gain.value = parseFloat(gainEl.value);
+
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+
+        sourceNode.connect(gainNode);
+        gainNode.connect(analyser);
+
+        dataArray = new Uint8Array(analyser.fftSize);
+
+        drawWave();
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusEl.textContent = "Running (mic input)";
+      } catch (err) {
+        statusEl.textContent = "Microphone permission denied/error";
+        console.error(err);
+      }
+    }
+
+    function stop() {
+      cancelAnimationFrame(rafId);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (audioCtx) audioCtx.close();
+
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      statusEl.textContent = "Stopped";
+      drawGrid();
+    }
+
+    gainEl.addEventListener("input", () => {
+      if (gainNode) gainNode.gain.value = parseFloat(gainEl.value);
+    });
+
+    startBtn.addEventListener("click", start);
+    stopBtn.addEventListener("click", stop);
+
+    drawGrid();
+  </script>
+</body>
+</html>

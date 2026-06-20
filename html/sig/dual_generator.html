@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dual Channel Signal Generator PRO</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+
+body{
+background:#0e0e11;
+color:white;
+font-family:Arial;
+}
+
+.panel{
+display:flex;
+}
+
+.control{
+width:300px;
+padding:10px;
+background:#1c1c22;
+}
+
+canvas{
+background:black;
+}
+
+.slider{
+width:100%;
+}
+
+</style>
+</head>
+
+<body>
+
+<h2>Dual Channel Generator (Lab Edition Web)</h2>
+
+<button onclick="toggleTheme()">Toggle Theme</button>
+
+<div class="panel">
+
+<div class="control">
+
+<h3>Channel A</h3>
+
+Freq <input id="fa" type="range" min="1" max="5000" value="542" class="slider">
+Amp <input id="aa" type="range" min="0" max="1" step="0.01" value="0.5" class="slider">
+Duty <input id="da" type="range" min="0.01" max="0.99" step="0.01" value="0.5" class="slider">
+
+<select id="wa">
+<option>Sine</option>
+<option>Square</option>
+<option>Triangle</option>
+<option>Sawtooth</option>
+<option>Noise</option>
+<option>Pulse</option>
+</select>
+
+</div>
+
+<div class="control">
+
+<h3>Channel B</h3>
+
+Freq <input id="fb" type="range" min="1" max="5000" value="271" class="slider">
+Amp <input id="ab" type="range" min="0" max="1" step="0.01" value="0.35" class="slider">
+Duty <input id="db" type="range" min="0.01" max="0.99" step="0.01" value="0.25" class="slider">
+
+<select id="wb">
+<option>Sine</option>
+<option>Square</option>
+<option>Triangle</option>
+<option>Sawtooth</option>
+<option>Noise</option>
+<option>Pulse</option>
+</select>
+
+</div>
+
+</div>
+
+<canvas id="osc" width="900" height="400"></canvas>
+
+<script>
+
+let ctx=new (window.AudioContext||window.webkitAudioContext)();
+
+let analyser=ctx.createAnalyser();
+analyser.fftSize=2048;
+
+let gain=ctx.createGain();
+
+gain.connect(analyser);
+analyser.connect(ctx.destination);
+
+let oscA,oscB;
+
+function startAudio(){
+
+oscA=ctx.createOscillator();
+oscB=ctx.createOscillator();
+
+let g1=ctx.createGain();
+let g2=ctx.createGain();
+
+oscA.connect(g1);
+oscB.connect(g2);
+
+g1.connect(gain);
+g2.connect(gain);
+
+oscA.start();
+oscB.start();
+
+setInterval(updateAudio,20);
+
+drawScope();
+
+}
+
+function updateAudio(){
+
+oscA.frequency.value=fa.value;
+oscB.frequency.value=fb.value;
+
+g1=gain.gain.value=aa.value;
+g2=gain.gain.value=ab.value;
+
+oscA.type=wa.value.toLowerCase();
+oscB.type=wb.value.toLowerCase();
+
+}
+
+let canvas=document.getElementById("osc");
+let c=canvas.getContext("2d");
+
+function drawScope(){
+
+requestAnimationFrame(drawScope);
+
+let data=new Uint8Array(analyser.frequencyBinCount);
+analyser.getByteTimeDomainData(data);
+
+c.fillStyle="#000";
+c.fillRect(0,0,900,400);
+
+c.strokeStyle="#00ffcc";
+c.beginPath();
+
+for(let i=0;i<data.length;i++){
+
+let v=data[i]/128;
+let y=v*200;
+
+c.lineTo(i*2,y);
+
+}
+
+c.stroke();
+
+}
+
+startAudio();
+
+</script>
+
+</body>
+</html>

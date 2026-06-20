@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dual Channel Signal Generator - Web Edition</title>
+    <style>
+        :root {
+            --bg: #f0f0f0; --fg: #000; --panel: #ffffff; --accent: #007bff;
+        }
+        body.dark-mode {
+            --bg: #1e1e1e; --fg: #fff; --panel: #2e2e2e; --accent: #17a2b8;
+        }
+        body {
+            font-family: Arial, sans-serif; background-color: var(--bg); color: var(--fg);
+            display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px;
+            transition: background 0.3s;
+        }
+        .header { width: 100%; max-width: 1100px; display: flex; justify-content: space-between; margin-bottom: 20px; }
+        .main-container { display: flex; gap: 20px; width: 100%; max-width: 1100px; flex-wrap: wrap; }
+        .panel { background: var(--panel); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .controls-side { flex: 1; min-width: 300px; display: flex; gap: 15px; }
+        .channel-card { flex: 1; border: 1px solid #ccc; padding: 10px; border-radius: 5px; }
+        .graph-side { flex: 2; min-width: 400px; display: flex; flex-direction: column; }
+        canvas { background: #000; width: 100%; height: 300px; border-radius: 5px; }
+        .control-group { margin-bottom: 12px; }
+        label { font-size: 0.8rem; display: block; margin-bottom: 4px; font-weight: bold; }
+        input[type="range"] { width: 100%; }
+        .val-display { font-family: monospace; font-size: 0.9rem; float: right; }
+        button { cursor: pointer; padding: 8px 12px; border: none; border-radius: 4px; background: var(--accent); color: white; }
+        button.mute-btn { background: #dc3545; width: 100%; margin-bottom: 10px; }
+        button.mute-btn.muted { background: #28a745; }
+        .scope-controls { margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h2>Lab Signal Generator</h2>
+    <button onclick="toggleTheme()">Toggle Dark/Light</button>
+</div>
+
+<div class="main-container">
+    <div class="panel controls-side">
+        <div class="channel-card" id="chan-A">
+            <button class="mute-btn" onclick="toggleMute('A')">Mute A</button>
+            <div class="control-group">
+                <label>Waveform</label>
+                <select onchange="updateParam('A', 'wave', this.value)">
+                    <option value="sine">Sine</option>
+                    <option value="square">Square</option>
+                    <option value="triangle">Triangle</option>
+                    <option value="sawtooth">Sawtooth</option>
+                    <option value="pulse">Pulse (Duty)</option>
+                    <option value="noise">Noise</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Freq (Hz) <span class="val-display" id="val-A-freq">440</span></label>
+                <input type="range" min="1" max="2000" value="440" oninput="updateParam('A', 'freq', this.value)">
+            </div>
+            <div class="control-group">
+                <label>Amp <span class="val-display" id="val-A-amp">0.5</span></label>
+                <input type="range" min="0" max="1" step="0.01" value="0.5" oninput="updateParam('A', 'amp', this.value)">
+            </div>
+            <div class="control-group">
+                <label>Duty Cycle <span class="val-display" id="val-A-duty">0.5</span></label>
+                <input type="range" min="0.01" max="0.99" step="0.01" value="0.5" oninput="updateParam('A', 'duty', this.value)">
+            </div>
+        </div>
+
+        <div class="channel-card" id="chan-B">
+            <button class="mute-btn" onclick="toggleMute('B')">Mute B</button>
+            <div class="control-group">
+                <label>Waveform</label>
+                <select onchange="updateParam('B', 'wave', this.value)">
+                    <option value="sine">Sine</option>
+                    <option value="square" selected>Square</option>
+                    <option value="triangle">Triangle</option>
+                    <option value="sawtooth">Sawtooth</option>
+                    <option value="pulse">Pulse (Duty)</option>
+                    <option value="noise">Noise</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Freq (Hz) <span class="val-display" id="val-B-freq">220</span></label>
+                <input type="range" min="1" max="2000" value="220" oninput="updateParam('B', 'freq', this.value)">
+            </div>
+            <div class="control-group">
+                <label>Amp <span class="val-display" id="val-B-amp">0.3</span></label>
+                <input type="range" min="0" max="1" step="0.01" value="0.3" oninput="updateParam('B', 'amp', this.value)">
+            </div>
+            <div class="control-group">
+                <label>Duty Cycle <span class="val-display" id="val-B-duty">0.25</span></label>
+                <input type="range" min="0.01" max="0.99" step="0.01" value="0.25" oninput="updateParam('B', 'duty', this.value)">
+            </div>
+        </div>
+    </div>
+
+    <div class="panel graph-side">
+        <canvas id="oscilloscope"></canvas>
+        <div class="scope-controls">
+            <div class="control-group">
+                <label>Time Zoom (X)</label>
+                <input type="range" min="1" max="100" value="20" oninput="scopeZoomX = this.value">
+            </div>
+            <div class="control-group">
+                <label>Amp Zoom (Y)</label>
+                <input type="range" min="0.5" max="5" step="0.1" value="1" oninput="scopeZoomY = this.value">
+            </div>
+            <p style="font-size: 0.7rem; color: #888;">* Click anywhere to start Audio Context if sound doesn't play.</p>
+        </div>
+    </div>
+</div>
+
+<script>
+    let audioCtx;
+    let scopeZoomX = 20;
+    let scopeZoomY = 1;
+    
+    const params = {
+        A: { freq: 440, amp: 0.5, wave: 'sine', duty: 0.5, enabled: true, node: null, gain: null },
+        B: { freq: 220, amp: 0.3, wave: 'square', duty: 0.25, enabled: true, node: null, gain: null }
+    };
+
+    function initAudio() {
+        if (audioCtx) return;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        setupChannel('A', -1); // Left
+        setupChannel('B', 1);  // Right
+    }
+
+    function setupChannel(ch, panValue) {
+        const p = params[ch];
+        const panner = audioCtx.createStereoPanner();
+        panner.pan.value = panValue;
+
+        p.gain = audioCtx.createGain();
+        p.gain.gain.value = p.enabled ? p.amp : 0;
+
+        createOscNode(ch);
+        
+        p.node.connect(p.gain);
+        p.gain.connect(panner);
+        panner.connect(audioCtx.destination);
+    }
+
+    function createOscNode(ch) {
+        const p = params[ch];
+        if (p.node) p.node.stop();
+
+        if (p.wave === 'noise') {
+            const bufferSize = 2 * audioCtx.sampleRate;
+            const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
+            p.node = audioCtx.createBufferSource();
+            p.node.buffer = noiseBuffer;
+            p.node.loop = true;
+        } else if (p.wave === 'pulse') {
+            // Pulse is simulated via a periodic wave for efficiency
+            const real = new Float32Array(64);
+            const imag = new Float32Array(64);
+            for (let n = 1; n < 64; n++) {
+                real[n] = (2 / (n * Math.PI)) * Math.sin(n * Math.PI * p.duty);
+            }
+            const wave = audioCtx.createPeriodicWave(real, imag);
+            p.node = audioCtx.createOscillator();
+            p.node.setPeriodicWave(wave);
+            p.node.frequency.value = p.freq;
+        } else {
+            p.node = audioCtx.createOscillator();
+            p.node.type = p.wave;
+            p.node.frequency.value = p.freq;
+        }
+        
+        if (p.gain) p.node.connect(p.gain);
+        p.node.start();
+    }
+
+    function updateParam(ch, key, val) {
+        initAudio();
+        const p = params[ch];
+        if (key === 'freq') {
+            p.freq = parseFloat(val);
+            if (p.node.frequency) p.node.frequency.setTargetAtTime(p.freq, audioCtx.currentTime, 0.01);
+        } else if (key === 'amp') {
+            p.amp = parseFloat(val);
+            if (p.enabled) p.gain.gain.setTargetAtTime(p.amp, audioCtx.currentTime, 0.01);
+        } else if (key === 'wave' || key === 'duty') {
+            p[key] = (key === 'duty') ? parseFloat(val) : val;
+            createOscNode(ch);
+        }
+        document.getElementById(`val-${ch}-${key}`).innerText = val;
+    }
+
+    function toggleMute(ch) {
+        initAudio();
+        const p = params[ch];
+        p.enabled = !p.enabled;
+        p.gain.gain.setTargetAtTime(p.enabled ? p.amp : 0, audioCtx.currentTime, 0.05);
+        const btn = document.querySelector(`#chan-${ch} .mute-btn`);
+        btn.innerText = p.enabled ? `Mute ${ch}` : `Unmute ${ch}`;
+        btn.classList.toggle('muted', !p.enabled);
+    }
+
+    function toggleTheme() {
+        document.body.classList.toggle('dark-mode');
+    }
+
+    // Oscilloscope Rendering
+    const canvas = document.getElementById('oscilloscope');
+    const ctx = canvas.getContext('2d');
+
+    function draw() {
+        requestAnimationFrame(draw);
+        const w = canvas.width = canvas.offsetWidth;
+        const h = canvas.height = canvas.offsetHeight;
+        
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, w, h);
+        
+        // Grid
+        ctx.strokeStyle = '#333';
+        ctx.beginPath();
+        for(let i=0; i<w; i+=w/10) { ctx.moveTo(i,0); ctx.lineTo(i,h); }
+        for(let i=0; i<h; i+=h/8) { ctx.moveTo(0,i); ctx.lineTo(w,i); }
+        ctx.stroke();
+
+        drawWave('A', '#00ff00');
+        drawWave('B', '#ff00ff');
+    }
+
+    function drawWave(ch, color) {
+        const p = params[ch];
+        if (!p.enabled) return;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+
+        const timeStep = (1 / 44100) * scopeZoomX;
+        for (let x = 0; x < canvas.width; x++) {
+            const t = x * timeStep;
+            let yVal = 0;
+
+            // Simplified math for visualization logic
+            if (p.wave === 'sine') yVal = Math.sin(2 * Math.PI * p.freq * t);
+            else if (p.wave === 'square') yVal = (t * p.freq % 1) < p.duty ? 1 : -1;
+            else if (p.wave === 'pulse') yVal = (t * p.freq % 1) < p.duty ? 1 : -1;
+            else if (p.wave === 'triangle') yVal = 1 - 4 * Math.abs(Math.round(t * p.freq - 0.25) - (t * p.freq - 0.25));
+            else if (p.wave === 'sawtooth') yVal = 2 * (t * p.freq % 1) - 1;
+            else if (p.wave === 'noise') yVal = Math.random() * 2 - 1;
+
+            const y = (h / 2) - (yVal * p.amp * (h / 2) * scopeZoomY);
+            if (x === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+
+    document.addEventListener('click', () => { if(audioCtx) audioCtx.resume(); }, {once: true});
+    draw();
+</script>
+
+</body>
+</html>

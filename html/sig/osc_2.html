@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dual Channel Oscilloscope (Calibrated Volts)</title>
+  <style>
+    :root{
+      --bg:#071018; --panel:#0d1b2a; --grid:#223a52; --line:#2e4d68; --txt:#dbe9f7;
+      --a:#4cf0ff; --b:#ff8ad8;
+    }
+    body{margin:0;background:var(--bg);color:var(--txt);font-family:Consolas,monospace}
+    .wrap{max-width:1150px;margin:18px auto;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+    .card{border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    button,input{background:#13293d;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+    input[type="range"]{padding:0}
+    canvas{width:100%;height:220px;display:block;background:#040b12;border:1px solid var(--line);border-radius:8px;margin:8px 0}
+    .a{color:var(--a)} .b{color:var(--b)}
+    .small{font-size:12px;opacity:.88}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row">
+    <button id="start">Start Dual Mic</button>
+    <button id="stop" disabled>Stop</button>
+    <span id="status">Idle</span>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="a"><b>CH A Controls</b></div>
+      <label>Time (A): <input id="timeA" type="range" min="1" max="10" step="0.5" value="1"></label><br>
+      <label>Amplitude (A): <input id="ampA" type="range" min="0.2" max="5" step="0.1" value="1"></label><br><br>
+      <label>Known Vpp (A): <input id="knownA" type="number" min="0.001" step="0.001" value="1.000"></label>
+      <button id="calA">Calibrate A</button>
+      <div class="small">Scale A: <span id="scaleA">not calibrated</span></div>
+    </div>
+
+    <div class="card">
+      <div class="b"><b>CH B Controls</b></div>
+      <label>Time (B): <input id="timeB" type="range" min="1" max="10" step="0.5" value="1"></label><br>
+      <label>Amplitude (B): <input id="ampB" type="range" min="0.2" max="5" step="0.1" value="1"></label><br><br>
+      <label>Known Vpp (B): <input id="knownB" type="number" min="0.001" step="0.001" value="1.000"></label>
+      <button id="calB">Calibrate B</button>
+      <div class="small">Scale B: <span id="scaleB">not calibrated</span></div>
+    </div>
+  </div>
+
+  <canvas id="chA" width="1200" height="220"></canvas>
+  <canvas id="chB" width="1200" height="220"></canvas>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="a"><b>CH A Readings</b></div>
+      <div>Frequency: <span id="fA">--</span> Hz</div>
+      <div>Vrms: <span id="vrA">--</span> V</div>
+      <div>Vpp: <span id="vppA">--</span> V</div>
+      <div class="small">Time base: <span id="tbA">--</span></div>
+    </div>
+    <div class="card">
+      <div class="b"><b>CH B Readings</b></div>
+      <div>Frequency: <span id="fB">--</span> Hz</div>
+      <div>Vrms: <span id="vrB">--</span> V</div>
+      <div>Vpp: <span id="vppB">--</span> V</div>
+      <div class="small">Time base: <span id="tbB">--</span></div>
+    </div>
+  </div>
+
+  <div class="small">
+    For real volts: feed a known sine/signal to each channel, enter known Vpp, click calibrate.
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+
+  const startBtn = $("start"), stopBtn = $("stop"), statusEl = $("status");
+  const cvsA = $("chA"), cvsB = $("chB");
+  const ctxA = cvsA.getContext("2d"), ctxB = cvsB.getContext("2d");
+
+  let audioCtx, stream, src, splitter, anaA, anaB, raf;
+  let bufA, bufB;
+  let scaleA = null, scaleB = null; // volts per normalized unit
+
+  function drawGrid(ctx, w, h){
+    ctx.fillStyle = "#040b12"; ctx.fillRect(0,0,w,h);
+    ctx.strokeStyle = "#223a52"; ctx.lineWidth = 1;
+    for(let i=0;i<=12;i++){ const x=i*w/12; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+    for(let i=0;i<=8;i++){ const y=i*h/8; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+    ctx.strokeStyle = "#2e4d68"; ctx.beginPath(); ctx.moveTo(0,h/2); ctx.lineTo(w,h/2); ctx.stroke();
+  }
+
+  function drawWave(ctx, data, color, timeZoom, ampZoom){
+    const w = ctx.canvas.width, h = ctx.canvas.height;
+    drawGrid(ctx, w, h);
+
+    const mid = h / 2;
+    const xStep = (w / data.length) * timeZoom; // bigger -> zoom in time
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+
+    let x = 0;
+    for(let i=0; i<data.length && x<=w; i++){
+      const y = mid - (data[i] * ampZoom * (h * 0.45));
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      x += xStep;
+    }
+    ctx.stroke();
+  }
+
+  function rms(arr){
+    let s=0; for(let i=0;i<arr.length;i++) s += arr[i]*arr[i];
+    return Math.sqrt(s/arr.length);
+  }
+
+  function vpp(arr){
+    let mn=1e9, mx=-1e9;
+    for(let i=0;i<arr.length;i++){ if(arr[i]<mn) mn=arr[i]; if(arr[i]>mx) mx=arr[i]; }
+    return mx - mn;
+  }
+
+  function estimateFreqAC(buf, sampleRate){
+    const N = buf.length;
+    const minHz = 30, maxHz = 3000;
+    const minLag = Math.floor(sampleRate/maxHz);
+    const maxLag = Math.min(Math.floor(sampleRate/minHz), N-1);
+    if (rms(buf) < 0.01) return null;
+
+    let bestLag=-1, bestCorr=0;
+    for(let lag=minLag; lag<=maxLag; lag++){
+      let corr=0;
+      for(let i=0;i<N-lag;i++) corr += buf[i]*buf[i+lag];
+      if(corr>bestCorr){ bestCorr=corr; bestLag=lag; }
+    }
+    return bestLag>0 ? sampleRate/bestLag : null;
+  }
+
+  function timeBaseText(bufferLen, sampleRate, timeZoom){
+    const shownSec = (bufferLen / sampleRate) / timeZoom;
+    const secDiv = shownSec / 12; // 12 vertical divisions
+    if (secDiv >= 1) return secDiv.toFixed(3) + " s/div";
+    if (secDiv >= 1e-3) return (secDiv*1e3).toFixed(3) + " ms/div";
+    return (secDiv*1e6).toFixed(1) + " us/div";
+  }
+
+  function updateReadings(){
+    const tA = parseFloat($("timeA").value), aA = parseFloat($("ampA").value);
+    const tB = parseFloat($("timeB").value), aB = parseFloat($("ampB").value);
+
+    drawWave(ctxA, bufA, "#4cf0ff", tA, aA);
+    drawWave(ctxB, bufB, "#ff8ad8", tB, aB);
+
+    const fA = estimateFreqAC(bufA, audioCtx.sampleRate);
+    const fB = estimateFreqAC(bufB, audioCtx.sampleRate);
+    $("fA").textContent = fA ? fA.toFixed(1) : "--";
+    $("fB").textContent = fB ? fB.toFixed(1) : "--";
+
+    const rrA = rms(bufA), rrB = rms(bufB);
+    const ppA = vpp(bufA), ppB = vpp(bufB);
+
+    $("vrA").textContent = scaleA ? (rrA*scaleA).toFixed(4) : "--";
+    $("vrB").textContent = scaleB ? (rrB*scaleB).toFixed(4) : "--";
+    $("vppA").textContent = scaleA ? (ppA*scaleA).toFixed(4) : "--";
+    $("vppB").textContent = scaleB ? (ppB*scaleB).toFixed(4) : "--";
+
+    $("tbA").textContent = timeBaseText(bufA.length, audioCtx.sampleRate, tA);
+    $("tbB").textContent = timeBaseText(bufB.length, audioCtx.sampleRate, tB);
+  }
+
+  function loop(){
+    raf = requestAnimationFrame(loop);
+    anaA.getFloatTimeDomainData(bufA);
+    anaB.getFloatTimeDomainData(bufB);
+    updateReadings();
+  }
+
+  async function start(){
+    try{
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount:{ideal:2},
+          echoCancellation:false, noiseSuppression:false, autoGainControl:false
+        }
+      });
+
+      src = audioCtx.createMediaStreamSource(stream);
+      splitter = audioCtx.createChannelSplitter(2);
+      anaA = audioCtx.createAnalyser(); anaA.fftSize = 4096;
+      anaB = audioCtx.createAnalyser(); anaB.fftSize = 4096;
+
+      src.connect(splitter);
+      splitter.connect(anaA, 0); // CH A
+      splitter.connect(anaB, 1); // CH B
+
+      bufA = new Float32Array(anaA.fftSize);
+      bufB = new Float32Array(anaB.fftSize);
+
+      loop();
+      startBtn.disabled = true; stopBtn.disabled = false;
+      statusEl.textContent = "Running (2ch requested)";
+    }catch(e){
+      console.error(e);
+      statusEl.textContent = "Mic start failed";
+    }
+  }
+
+  function stop(){
+    cancelAnimationFrame(raf);
+    if(stream) stream.getTracks().forEach(t => t.stop());
+    if(audioCtx) audioCtx.close();
+    startBtn.disabled = false; stopBtn.disabled = true;
+    statusEl.textContent = "Stopped";
+    drawGrid(ctxA, cvsA.width, cvsA.height);
+    drawGrid(ctxB, cvsB.width, cvsB.height);
+  }
+
+  $("calA").onclick = () => {
+    if(!bufA) return;
+    const known = parseFloat($("knownA").value);
+    const measured = vpp(bufA);
+    if(known > 0 && measured > 1e-6){
+      scaleA = known / measured;
+      $("scaleA").textContent = scaleA.toFixed(6) + " V/unit";
+    }
+  };
+
+  $("calB").onclick = () => {
+    if(!bufB) return;
+    const known = parseFloat($("knownB").value);
+    const measured = vpp(bufB);
+    if(known > 0 && measured > 1e-6){
+      scaleB = known / measured;
+      $("scaleB").textContent = scaleB.toFixed(6) + " V/unit";
+    }
+  };
+
+  startBtn.onclick = start;
+  stopBtn.onclick = stop;
+  drawGrid(ctxA, cvsA.width, cvsA.height);
+  drawGrid(ctxB, cvsB.width, cvsB.height);
+</script>
+</body>
+</html>

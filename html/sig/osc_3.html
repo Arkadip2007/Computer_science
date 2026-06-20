@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dual Channel Oscilloscope (Calibrated Volts + Sensitivity)</title>
+  <style>
+    :root{
+      --bg:#071018; --panel:#0d1b2a; --grid:#223a52; --line:#2e4d68; --txt:#dbe9f7;
+      --a:#4cf0ff; --b:#ff8ad8;
+    }
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--txt);font-family:Consolas,monospace;overflow:hidden}
+    .wrap{
+      max-width:1280px;
+      height:calc(100vh - 12px);
+      margin:6px auto;
+      padding:10px;
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:10px;
+      box-sizing:border-box;
+    }
+    .layout{
+      height:100%;
+      display:grid;
+      grid-template-columns:360px 1fr;
+      gap:10px;
+    }
+    .leftPanel{
+      min-width:0;
+      overflow:auto;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      padding-right:2px;
+    }
+    .rightPanel{
+      min-width:0;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      height:100%;
+    }
+    .scopeCard{
+      flex:1 1 0;
+      min-height:0;
+      border:1px solid var(--line);
+      border-radius:8px;
+      padding:6px;
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+    }
+    .scopeTitle{font-size:13px;opacity:.9}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .card{border:1px solid var(--line);border-radius:8px;padding:8px;margin:0}
+    .grid2{display:grid;grid-template-columns:1fr;gap:8px}
+    button,input{background:#13293d;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+    input[type="range"]{padding:0}
+    canvas{
+      width:100%;
+      height:100%;
+      display:block;
+      background:#040b12;
+      border:1px solid var(--line);
+      border-radius:8px;
+      margin:0;
+    }
+    .a{color:var(--a)} .b{color:var(--b)}
+    .small{font-size:12px;opacity:.88;line-height:1.25}
+    .switchRow{display:flex;gap:12px;align-items:center;margin-top:6px}
+    label{line-height:1.2}
+    br{line-height:0.7}
+
+    @media (max-width: 1050px){
+      .wrap{height:auto;min-height:100vh;overflow:auto}
+      body{overflow:auto}
+      .layout{grid-template-columns:1fr}
+      .leftPanel{overflow:visible}
+      .rightPanel{height:520px}
+      canvas{height:100%}
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="layout">
+    <aside class="leftPanel">
+      <div class="card">
+        <div class="row">
+          <button id="start">Start Dual Mic</button>
+          <button id="stop" disabled>Stop</button>
+        </div>
+        <div class="row">
+          <label>Sensitivity:
+            <input id="sens" type="range" min="1" max="400" step="1" value="80">
+          </label>
+          <span id="sensVal">x80</span>
+        </div>
+        <div id="status">Idle</div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="a"><b>CH A Controls</b></div>
+          <div class="switchRow">
+            <label><input id="showA" type="checkbox" checked> Show CH A</label>
+          </div>
+          <label>Time (A): <input id="timeA" type="range" min="1" max="10" step="0.5" value="1"></label><br>
+          <label>Amplitude (A): <input id="ampA" type="range" min="0.2" max="8" step="0.1" value="1"></label><br><br>
+          <label>Known Vpp (A): <input id="knownA" type="number" min="0.001" step="0.001" value="1.000"></label>
+          <button id="calA">Calibrate A</button>
+          <div class="small">Scale A: <span id="scaleA">not calibrated</span></div>
+        </div>
+
+        <div class="card">
+          <div class="b"><b>CH B Controls</b></div>
+          <div class="switchRow">
+            <label><input id="showB" type="checkbox" checked> Show CH B</label>
+          </div>
+          <label>Time (B): <input id="timeB" type="range" min="1" max="10" step="0.5" value="1"></label><br>
+          <label>Amplitude (B): <input id="ampB" type="range" min="0.2" max="8" step="0.1" value="1"></label><br><br>
+          <label>Known Vpp (B): <input id="knownB" type="number" min="0.001" step="0.001" value="1.000"></label>
+          <button id="calB">Calibrate B</button>
+          <div class="small">Scale B: <span id="scaleB">not calibrated</span></div>
+        </div>
+      </div>
+
+      <div class="small" style="margin-top:2px;">
+        Real volts need calibration per channel: apply known signal, enter known Vpp, click Calibrate.
+      </div>
+    </aside>
+
+    <section class="rightPanel">
+      <div class="scopeCard">
+        <div class="scopeTitle">Combined Scope (CH A + CH B)</div>
+        <canvas id="scopeMain" width="1200" height="520"></canvas>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+
+  const startBtn = $("start"), stopBtn = $("stop"), statusEl = $("status");
+  const cvsMain = $("scopeMain");
+  const ctxMain = cvsMain.getContext("2d");
+
+  let audioCtx, stream, src, splitter, anaA, anaB, raf;
+  let bufA, bufB, procA, procB;
+  let chanCount = 1;
+  let scaleA = null, scaleB = null; // volts per normalized unit
+  const freqStateA = { bucket: [], lastMs: performance.now(), shown: null, lastValidMs: 0 };
+  const freqStateB = { bucket: [], lastMs: performance.now(), shown: null, lastValidMs: 0 };
+
+  function resizeCanvasToDisplaySize(canvas, ctx){
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = Math.max(1, Math.floor(canvas.clientWidth));
+    const cssH = Math.max(1, Math.floor(canvas.clientHeight));
+    const targetW = Math.max(1, Math.floor(cssW * dpr));
+    const targetH = Math.max(1, Math.floor(cssH * dpr));
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(dpr, dpr);
+    }
+  }
+
+  function refreshCanvasSizes(){
+    resizeCanvasToDisplaySize(cvsMain, ctxMain);
+    drawGrid(ctxMain, cvsMain.clientWidth, cvsMain.clientHeight);
+  }
+
+  function drawGrid(ctx, w, h){
+    ctx.fillStyle = "#040b12";
+    ctx.fillRect(0,0,w,h);
+    ctx.strokeStyle = "#223a52";
+    ctx.lineWidth = 1;
+    for(let i=0;i<=12;i++){
+      const x=i*w/12;
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke();
+    }
+    for(let i=0;i<=8;i++){
+      const y=i*h/8;
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+    }
+    ctx.strokeStyle = "#2e4d68";
+    ctx.beginPath(); ctx.moveTo(0,h/2); ctx.lineTo(w,h/2); ctx.stroke();
+  }
+
+  function findTriggerIndex(data, threshold){
+    // Rising-edge trigger: first crossing from below to above threshold.
+    for (let i = 1; i < data.length; i++) {
+      if (data[i - 1] < threshold && data[i] >= threshold) return i;
+    }
+    return 0;
+  }
+
+  function drawTrace(ctx, data, color, timeZoom, ampZoom, triggerIndex){
+    const w = ctx.canvas.clientWidth, h = ctx.canvas.clientHeight;
+    const mid = h / 2;
+    const xStep = (w / data.length) * timeZoom;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+
+    let x = 0;
+    for(let i=0; i<data.length && x<=w; i++){
+      const idx = (triggerIndex + i) % data.length;
+      const y = mid - (data[idx] * ampZoom * (h * 0.45));
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      x += xStep;
+    }
+    ctx.stroke();
+  }
+
+  function fmtOrDash(v, digits){
+    return v == null ? "--" : v.toFixed(digits);
+  }
+
+  function drawReadingsOverlay(ctx, width, height, aInfo, bInfo, showA, showB){
+    ctx.save();
+    ctx.font = "13px Consolas, monospace";
+    ctx.textBaseline = "top";
+
+    const pad = 10;
+    const boxW = 290;
+    const boxH = 92;
+
+    ctx.fillStyle = "rgba(4, 11, 18, 0.75)";
+    ctx.fillRect(pad, pad, boxW, boxH);
+    ctx.fillRect(width - boxW - pad, pad, boxW, boxH);
+
+    ctx.fillStyle = "#4cf0ff";
+    ctx.fillText("CH A " + (showA ? "ON" : "OFF"), pad + 8, pad + 6);
+    ctx.fillStyle = "#dbe9f7";
+    ctx.fillText(`F(avg): ${fmtOrDash(aInfo.freq, 0)} Hz`, pad + 8, pad + 24);
+    ctx.fillText(`Vrms: ${fmtOrDash(aInfo.vrms, 4)} V`, pad + 8, pad + 40);
+    ctx.fillText(`Vpp: ${fmtOrDash(aInfo.vpp, 4)} V`, pad + 8, pad + 56);
+    ctx.fillText(`TB: ${aInfo.tb}  RMS: ${aInfo.raw.toFixed(6)}`, pad + 8, pad + 72);
+
+    const rx = width - boxW - pad;
+    ctx.fillStyle = "#ff8ad8";
+    ctx.fillText("CH B " + (showB ? "ON" : "OFF"), rx + 8, pad + 6);
+    ctx.fillStyle = "#dbe9f7";
+    ctx.fillText(`F(avg): ${fmtOrDash(bInfo.freq, 0)} Hz`, rx + 8, pad + 24);
+    ctx.fillText(`Vrms: ${fmtOrDash(bInfo.vrms, 4)} V`, rx + 8, pad + 40);
+    ctx.fillText(`Vpp: ${fmtOrDash(bInfo.vpp, 4)} V`, rx + 8, pad + 56);
+    ctx.fillText(`TB: ${bInfo.tb}  RMS: ${bInfo.raw.toFixed(6)}`, rx + 8, pad + 72);
+
+    ctx.restore();
+  }
+
+  function rms(arr){
+    let s=0;
+    for(let i=0;i<arr.length;i++) s += arr[i]*arr[i];
+    return Math.sqrt(s/arr.length);
+  }
+
+  function vpp(arr){
+    let mn=1e9, mx=-1e9;
+    for(let i=0;i<arr.length;i++){
+      if(arr[i]<mn) mn=arr[i];
+      if(arr[i]>mx) mx=arr[i];
+    }
+    return mx - mn;
+  }
+
+  function preprocessSignal(input, output, gain){
+    let mean = 0;
+    for (let i = 0; i < input.length; i++) mean += input[i];
+    mean /= input.length;
+
+    for (let i = 0; i < input.length; i++) {
+      const v = (input[i] - mean) * gain;
+      // Soft compression keeps weak signals visible without hard clipping distortion.
+      output[i] = v / (1 + Math.abs(v));
+    }
+  }
+
+  function estimateFreqAC(buf, sampleRate){
+    const N = buf.length;
+    const minHz = 20, maxHz = 3500;
+    const minLag = Math.floor(sampleRate / maxHz);
+    const maxLag = Math.min(Math.floor(sampleRate / minHz), N - 1);
+
+    let bestLag = -1;
+    let bestCorr = -1;
+
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let num = 0, e1 = 0, e2 = 0;
+      for (let i = 0; i < N - lag; i++) {
+        const a = buf[i], b = buf[i + lag];
+        num += a * b;
+        e1 += a * a;
+        e2 += b * b;
+      }
+      const denom = Math.sqrt(e1 * e2) || 1e-12;
+      const corr = num / denom;
+      if (corr > bestCorr) {
+        bestCorr = corr;
+        bestLag = lag;
+      }
+    }
+
+    if (bestLag <= 0 || bestCorr < 0.35) return null;
+    return { freq: sampleRate / bestLag, corr: bestCorr };
+  }
+
+  function estimateFreqZeroCross(buf, sampleRate){
+    const N = buf.length;
+    let crossings = 0;
+    for (let i = 1; i < N; i++) {
+      const a = buf[i - 1], b = buf[i];
+      if ((a <= 0 && b > 0) || (a >= 0 && b < 0)) crossings++;
+    }
+    if (crossings < 4) return null;
+    const duration = N / sampleRate;
+    const freq = (crossings / 2) / duration;
+    if (!Number.isFinite(freq) || freq < 20 || freq > 4000) return null;
+    return freq;
+  }
+
+  function estimateFreqCrossing(buf, sampleRate){
+    const minHz = 20, maxHz = 3500;
+    const minSep = sampleRate / maxHz * 0.6;
+    const level = rms(buf);
+    if (level < 0.01) return null;
+
+    const crossings = [];
+    let lastIdx = -1e9;
+    for (let i = 1; i < buf.length; i++) {
+      const a = buf[i - 1], b = buf[i];
+      if (a <= 0 && b > 0) {
+        const slope = b - a;
+        if (slope < 0.004) continue;
+        const frac = (0 - a) / (b - a || 1e-12);
+        const pos = (i - 1) + frac;
+        if ((pos - lastIdx) >= minSep) {
+          crossings.push(pos);
+          lastIdx = pos;
+        }
+      }
+    }
+
+    if (crossings.length < 3) return null;
+    const periods = [];
+    for (let i = 1; i < crossings.length; i++) periods.push(crossings[i] - crossings[i - 1]);
+    if (periods.length < 2) return null;
+
+    periods.sort((a, b) => a - b);
+    const cut = Math.floor(periods.length * 0.2);
+    const core = periods.slice(cut, periods.length - cut || periods.length);
+    const meanPeriod = core.reduce((s, x) => s + x, 0) / core.length;
+    if (!Number.isFinite(meanPeriod) || meanPeriod <= 0) return null;
+
+    const freq = sampleRate / meanPeriod;
+    if (!Number.isFinite(freq) || freq < minHz || freq > maxHz) return null;
+    return freq;
+  }
+
+  function timeBaseText(bufferLen, sampleRate, timeZoom){
+    const shownSec = (bufferLen / sampleRate) / timeZoom;
+    const secDiv = shownSec / 12;
+    if (secDiv >= 1) return secDiv.toFixed(3) + " s/div";
+    if (secDiv >= 1e-3) return (secDiv * 1e3).toFixed(3) + " ms/div";
+    return (secDiv * 1e6).toFixed(1) + " us/div";
+  }
+
+  function updateReadings(){
+    const tA = parseFloat($("timeA").value), aA = parseFloat($("ampA").value);
+    const tB = parseFloat($("timeB").value), aB = parseFloat($("ampB").value);
+    const sensitivity = parseFloat($("sens").value);
+    const showA = $("showA").checked;
+    const showB = $("showB").checked;
+
+    preprocessSignal(bufA, procA, sensitivity);
+    preprocessSignal(bufB, procB, sensitivity);
+
+    const w = cvsMain.clientWidth;
+    const h = cvsMain.clientHeight;
+    drawGrid(ctxMain, w, h);
+    const trigA = findTriggerIndex(procA, 0);
+    const trigB = findTriggerIndex(procB, 0);
+    if (showA) drawTrace(ctxMain, procA, "#4cf0ff", tA, aA, trigA);
+    if (showB) drawTrace(ctxMain, procB, "#ff8ad8", tB, aB, trigB);
+
+    const rrA = rms(bufA), rrB = rms(bufB);
+    const ppA = vpp(bufA), ppB = vpp(bufB);
+
+    // Raw-domain gates: block silence/noise from producing fake frequencies.
+    const signalA = rrA > 0.00012 && ppA > 0.0008;
+    const signalB = rrB > 0.00012 && ppB > 0.0008;
+
+    const crossA = signalA ? estimateFreqCrossing(procA, audioCtx.sampleRate) : null;
+    const crossB = signalB ? estimateFreqCrossing(procB, audioCtx.sampleRate) : null;
+    const acA = signalA ? estimateFreqAC(procA, audioCtx.sampleRate) : null;
+    const acB = signalB ? estimateFreqAC(procB, audioCtx.sampleRate) : null;
+    let fAInst = crossA ?? ((acA && acA.corr >= 0.45) ? acA.freq : null);
+    let fBInst = crossB ?? ((acB && acB.corr >= 0.45) ? acB.freq : null);
+
+    // If crossing and AC disagree strongly, trust crossing (better for clean tones).
+    if (crossA != null && acA && acA.corr >= 0.45) {
+      const d = Math.abs(crossA - acA.freq) / Math.max(crossA, acA.freq);
+      if (d > 0.25) fAInst = crossA;
+    }
+    if (crossB != null && acB && acB.corr >= 0.45) {
+      const d = Math.abs(crossB - acB.freq) / Math.max(crossB, acB.freq);
+      if (d > 0.25) fBInst = crossB;
+    }
+    const now = performance.now();
+    if (fAInst != null) {
+      freqStateA.bucket.push(fAInst);
+      freqStateA.lastValidMs = now;
+    }
+    if (fBInst != null) {
+      freqStateB.bucket.push(fBInst);
+      freqStateB.lastValidMs = now;
+    }
+    if (now - freqStateA.lastMs >= 250) {
+      if (freqStateA.bucket.length > 0) {
+        const arr = [...freqStateA.bucket].sort((a, b) => a - b);
+        const cut = Math.floor(arr.length * 0.2);
+        const core = arr.slice(cut, arr.length - cut || arr.length);
+        const avg = core.reduce((s, x) => s + x, 0) / core.length;
+        if (freqStateA.shown == null) {
+          freqStateA.shown = avg;
+        } else {
+          const diff = Math.abs(avg - freqStateA.shown);
+          const alpha = diff > Math.max(20, freqStateA.shown * 0.05) ? 0.55 : 0.22;
+          freqStateA.shown += alpha * (avg - freqStateA.shown);
+        }
+      }
+      if (now - freqStateA.lastValidMs > 500) freqStateA.shown = null;
+      freqStateA.bucket.length = 0;
+      freqStateA.lastMs = now;
+    }
+    if (now - freqStateB.lastMs >= 250) {
+      if (freqStateB.bucket.length > 0) {
+        const arr = [...freqStateB.bucket].sort((a, b) => a - b);
+        const cut = Math.floor(arr.length * 0.2);
+        const core = arr.slice(cut, arr.length - cut || arr.length);
+        const avg = core.reduce((s, x) => s + x, 0) / core.length;
+        if (freqStateB.shown == null) {
+          freqStateB.shown = avg;
+        } else {
+          const diff = Math.abs(avg - freqStateB.shown);
+          const alpha = diff > Math.max(20, freqStateB.shown * 0.05) ? 0.55 : 0.22;
+          freqStateB.shown += alpha * (avg - freqStateB.shown);
+        }
+      }
+      if (now - freqStateB.lastValidMs > 500) freqStateB.shown = null;
+      freqStateB.bucket.length = 0;
+      freqStateB.lastMs = now;
+    }
+    const tbA = timeBaseText(bufA.length, audioCtx.sampleRate, tA);
+    const tbB = timeBaseText(bufB.length, audioCtx.sampleRate, tB);
+    const vrA = scaleA ? rrA * scaleA : null;
+    const vrB = scaleB ? rrB * scaleB : null;
+    const vpA = scaleA ? ppA * scaleA : null;
+    const vpB = scaleB ? ppB * scaleB : null;
+
+    drawReadingsOverlay(
+      ctxMain, w, h,
+      { freq: freqStateA.shown, vrms: vrA, vpp: vpA, tb: tbA, raw: rrA },
+      { freq: freqStateB.shown, vrms: vrB, vpp: vpB, tb: tbB, raw: rrB },
+      showA, showB
+    );
+  }
+
+  function loop(){
+    raf = requestAnimationFrame(loop);
+    anaA.getFloatTimeDomainData(bufA);
+    anaB.getFloatTimeDomainData(bufB);
+    updateReadings();
+  }
+
+  async function start(){
+    try{
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: { ideal: 2 },
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+      });
+
+      const track = stream.getAudioTracks()[0];
+      const settings = track ? track.getSettings() : {};
+      chanCount = Math.max(1, Number(settings.channelCount || 1));
+
+      src = audioCtx.createMediaStreamSource(stream);
+      splitter = audioCtx.createChannelSplitter(2);
+      anaA = audioCtx.createAnalyser(); anaA.fftSize = 4096;
+      anaB = audioCtx.createAnalyser(); anaB.fftSize = 4096;
+
+      src.connect(splitter);
+      if (chanCount >= 2) {
+        splitter.connect(anaA, 0); // CH A
+        splitter.connect(anaB, 1); // CH B
+      } else {
+        // Mono fallback: duplicate single channel into A and B.
+        splitter.connect(anaA, 0);
+        splitter.connect(anaB, 0);
+      }
+
+      bufA = new Float32Array(anaA.fftSize);
+      bufB = new Float32Array(anaB.fftSize);
+      procA = new Float32Array(anaA.fftSize);
+      procB = new Float32Array(anaB.fftSize);
+
+      await audioCtx.resume();
+
+      loop();
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      statusEl.textContent = chanCount >= 2 ? "Running (stereo input)" : "Running (mono duplicated A/B)";
+      freqStateA.bucket.length = 0; freqStateA.shown = null; freqStateA.lastMs = performance.now(); freqStateA.lastValidMs = 0;
+      freqStateB.bucket.length = 0; freqStateB.shown = null; freqStateB.lastMs = performance.now(); freqStateB.lastValidMs = 0;
+    }catch(e){
+      console.error(e);
+      statusEl.textContent = "Mic start failed";
+    }
+  }
+
+  function stop(){
+    cancelAnimationFrame(raf);
+    if(stream) stream.getTracks().forEach(t => t.stop());
+    if(audioCtx) audioCtx.close();
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    statusEl.textContent = "Stopped";
+    drawGrid(ctxMain, cvsMain.clientWidth, cvsMain.clientHeight);
+  }
+
+  $("calA").onclick = () => {
+    if(!bufA) return;
+    const known = parseFloat($("knownA").value);
+    const measured = vpp(bufA);
+    if(known > 0 && measured > 1e-4){
+      scaleA = known / measured;
+      $("scaleA").textContent = scaleA.toFixed(6) + " V/unit";
+    } else {
+      $("scaleA").textContent = "signal too small for calibration";
+    }
+  };
+
+  $("calB").onclick = () => {
+    if(!bufB) return;
+    const known = parseFloat($("knownB").value);
+    const measured = vpp(bufB);
+    if(known > 0 && measured > 1e-4){
+      scaleB = known / measured;
+      $("scaleB").textContent = scaleB.toFixed(6) + " V/unit";
+    } else {
+      $("scaleB").textContent = "signal too small for calibration";
+    }
+  };
+
+  $("sens").oninput = () => {
+    $("sensVal").textContent = "x" + parseInt($("sens").value, 10);
+  };
+  $("sensVal").textContent = "x" + parseInt($("sens").value, 10);
+
+  startBtn.onclick = start;
+  stopBtn.onclick = stop;
+  window.addEventListener("resize", refreshCanvasSizes);
+
+  refreshCanvasSizes();
+</script>
+</body>
+</html>
